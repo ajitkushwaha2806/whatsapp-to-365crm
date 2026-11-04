@@ -90,20 +90,19 @@ function cleanWhatsAppStr(s) {
 }
 
 function extractWhatsAppRowContact(row) {
-  // 1. Check title attributes on spans/divs (common in WhatsApp)
-  const titleEls = row.querySelectorAll('span[title], div[title]');
-  for (const el of titleEls) {
-    const raw = cleanWhatsAppStr(el.getAttribute("title"));
-    if (
-      raw &&
-      raw.length >= 2 &&
-      !/^(unread|read|delivered|pending|pinned|starred|lead|new order|typing...)$/i.test(raw)
-    ) {
-      return raw;
-    }
+  // If this row is the "Archived" section button or a non-chat item
+  const rowFullText = cleanWhatsAppStr(row.innerText || row.textContent || "").toLowerCase();
+  if (
+    rowFullText === "archived" ||
+    rowFullText.startsWith("archived\n") ||
+    rowFullText.startsWith("archived ") ||
+    rowFullText.includes("archived chats")
+  ) {
+    const hasTime = /\b\d{1,2}:\d{2}\b|yesterday|\d{1,2}\/\d{1,2}\/\d{2,4}/i.test(rowFullText);
+    if (!hasTime) return "Unknown";
   }
 
-  // 2. TreeWalker over text nodes in row
+  // 1. TreeWalker over text nodes in row (find phone number or clean name first)
   const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
   const textItems = [];
   let node;
@@ -112,7 +111,7 @@ function extractWhatsAppRowContact(row) {
     if (t) textItems.push(t);
   }
 
-  // 2a. Check if any text node is explicitly a phone number (e.g. +91 6352 188 727)
+  // 1a. If any text node is explicitly a phone number (+91..., 92171..., etc.)
   for (const t of textItems) {
     const digits = t.replace(/\D/g, "");
     if (digits.length >= 10 && digits.length <= 15 && (/^\+/.test(t) || /^[0-9]/.test(t))) {
@@ -120,13 +119,33 @@ function extractWhatsAppRowContact(row) {
     }
   }
 
-  // 2b. Fallback: First text node that is not timestamp, badge, or message status
+  const ignoreRegex = /^(unread|read|delivered|pending|pinned|starred|lead|new order|typing\.\.\.|photo|voice call|video call|archived|archive|chats|status|channels|communities|search)$/i;
+
+  // 1b. Check title attributes on contact name spans/headings (avoiding status/pin icons)
+  const nameHeadings = row.querySelectorAll('span[title][dir="auto"], span[title]._ao3e, span[title]');
+  for (const el of nameHeadings) {
+    const raw = cleanWhatsAppStr(el.getAttribute("title"));
+    if (
+      raw &&
+      raw.length >= 2 &&
+      !ignoreRegex.test(raw) &&
+      !raw.toLowerCase().includes("pinned") &&
+      !raw.toLowerCase().includes("unread")
+    ) {
+      return raw;
+    }
+  }
+
+  // 1c. Fallback: First text node that is not timestamp, badge, or message status
   for (const t of textItems) {
+    const lower = t.toLowerCase();
     if (
       t.length >= 2 &&
       !/^\d{1,2}:\d{2}/.test(t) &&
       !/^(yesterday|today|sunday|monday|tuesday|wednesday|thursday|friday|saturday)$/i.test(t) &&
-      !/^(lead|new order|unread|typing...)$/i.test(t)
+      !ignoreRegex.test(t) &&
+      !lower.includes("started from an ad") &&
+      !lower.startsWith("http")
     ) {
       return t;
     }
@@ -135,88 +154,139 @@ function extractWhatsAppRowContact(row) {
   return "Unknown";
 }
 
+// Synchronous in-memory lead tracking to eliminate UI flicker / uncheck lag
+let inMemoryLeads = [];
+
+function isLeadSelected(contactName) {
+  if (!contactName) return false;
+  const cleanContact = cleanWhatsAppStr(contactName);
+  return inMemoryLeads.some((l) => {
+    const cleanL = cleanWhatsAppStr(l);
+    return (
+      cleanL === cleanContact ||
+      cleanL.startsWith(cleanContact + " •") ||
+      cleanL.includes(cleanContact)
+    );
+  });
+}
+
+function syncCheckboxesDOM() {
+  document.querySelectorAll(".wa-lead-checkbox").forEach((cb) => {
+    const name = cb.dataset.contactName;
+    if (name) {
+      const selected = isLeadSelected(name);
+      if (cb.checked !== selected) {
+        cb.checked = selected;
+      }
+    }
+  });
+  document.querySelectorAll(".leadio-mbg-checkbox").forEach((cb) => {
+    const name = cb.dataset.contactName;
+    if (name) {
+      const selected = isLeadSelected(name);
+      if (cb.checked !== selected) {
+        cb.checked = selected;
+      }
+    }
+  });
+}
+
 function injectWhatsAppCheckboxes() {
-  const chatRows = document.querySelectorAll(
-    '#pane-side div[role="listitem"], #pane-side div[role="row"], #pane-side div[data-testid="cell-frame-container"]'
-  );
+  // Clean up any stray checkboxes attached to outer/parent row containers
+  document.querySelectorAll('#pane-side div[role="row"] > .wa-lead-checkbox').forEach((cb) => {
+    if (cb.parentElement.querySelector('div[role="listitem"] .wa-lead-checkbox, div[data-testid="cell-frame-container"] .wa-lead-checkbox')) {
+      cb.remove();
+    }
+  });
 
-  chrome.storage.local.get(["selectedLeads"], (result) => {
-    const leads = result.selectedLeads || [];
+  // Query ONLY the most specific inner chat row container (never combining parent & child)
+  let candidateRows = document.querySelectorAll('#pane-side div[role="listitem"]');
+  if (!candidateRows || candidateRows.length === 0) {
+    candidateRows = document.querySelectorAll('#pane-side div[data-testid="cell-frame-container"]');
+  }
+  if (!candidateRows || candidateRows.length === 0) {
+    candidateRows = document.querySelectorAll('#pane-side div[role="row"]');
+  }
 
-    chatRows.forEach((row) => {
-      try {
-        const contactName = extractWhatsAppRowContact(row);
-        if (!contactName || contactName === "Unknown") return;
+  // Ensure no outer container is included if an inner container was already found
+  const chatRows = Array.from(candidateRows).filter((row) => {
+    return !row.querySelector('div[role="listitem"], div[data-testid="cell-frame-container"]');
+  });
 
-        // Extract phone if contactName is pure phone or if title has phone
-        let leadValue = contactName;
-        const phoneDigits = contactName.replace(/\D/g, "");
-        if (phoneDigits.length < 7) {
-          // Contact is a saved name, check if tooltip or subtext has phone
-          const rowText = cleanWhatsAppStr(row.innerText || row.textContent || "");
-          const m = rowText.match(/\+?[0-9]{10,14}/);
-          if (m) {
-            leadValue = `${contactName} • ${m[0].replace(/\D/g, "")}`;
-          }
+  chatRows.forEach((row) => {
+    try {
+      const contactName = extractWhatsAppRowContact(row);
+      if (!contactName || contactName === "Unknown") {
+        // If not a valid contact (e.g. Archived folder button), remove any accidental checkbox
+        const stray = row.querySelector(".wa-lead-checkbox");
+        if (stray) stray.remove();
+        return;
+      }
+
+      // Extract phone if contactName is pure phone or if title has phone
+      let leadValue = contactName;
+      const phoneDigits = contactName.replace(/\D/g, "");
+      if (phoneDigits.length < 7) {
+        // Contact is a saved name, check if tooltip or subtext has phone
+        const rowText = cleanWhatsAppStr(row.innerText || row.textContent || "");
+        const m = rowText.match(/\+?[0-9]{10,14}/);
+        if (m) {
+          leadValue = `${contactName} • ${m[0].replace(/\D/g, "")}`;
         }
+      }
 
-        let checkbox = row.querySelector(".wa-lead-checkbox");
+      // Clean up any duplicate checkboxes within the same row
+      const existingCheckboxes = row.querySelectorAll(".wa-lead-checkbox");
+      if (existingCheckboxes.length > 1) {
+        for (let i = 1; i < existingCheckboxes.length; i++) {
+          existingCheckboxes[i].remove();
+        }
+      }
+      let checkbox = existingCheckboxes[0];
 
-        const handleToggle = (e) => {
-          if (e) {
-            e.stopPropagation();
-            if (e.cancelBubble !== undefined) e.cancelBubble = true;
-          }
+      if (!checkbox) {
+        checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.className = "wa-lead-checkbox";
+        checkbox.dataset.contactName = contactName;
+        checkbox.dataset.leadValue = leadValue;
+
+        const stopEvt = (e) => {
+          if (e) e.stopPropagation();
+        };
+
+        checkbox.addEventListener("mousedown", stopEvt);
+        checkbox.addEventListener("mouseup", stopEvt);
+        checkbox.addEventListener("pointerdown", stopEvt);
+        checkbox.addEventListener("click", (e) => {
+          e.stopPropagation();
           const isChecked = checkbox.checked;
-          const val = checkbox.dataset.leadValue || contactName;
+          const currentContact = checkbox.dataset.contactName || contactName;
+          const val = checkbox.dataset.leadValue || currentContact;
+          console.log("[Leadio WA] Click toggle:", currentContact, "checked:", isChecked, "val:", val);
           if (isChecked) {
             addLead(val);
           } else {
-            removeLead(contactName);
+            removeLead(currentContact);
           }
-        };
-
-        if (!checkbox) {
-          checkbox = document.createElement("input");
-          checkbox.type = "checkbox";
-          checkbox.className = "wa-lead-checkbox";
-          checkbox.dataset.contactName = contactName;
-          checkbox.dataset.leadValue = leadValue;
-
-          const stopEvt = (e) => {
-            e.stopPropagation();
-            if (e.cancelBubble !== undefined) e.cancelBubble = true;
-          };
-
-          checkbox.addEventListener("click", (e) => {
-            stopEvt(e);
-            setTimeout(() => handleToggle(e), 0);
-          });
-          checkbox.addEventListener("mousedown", stopEvt);
-          checkbox.addEventListener("mouseup", stopEvt);
-          checkbox.addEventListener("pointerdown", stopEvt);
-          checkbox.addEventListener("change", handleToggle);
-
-          row.classList.add("wa-lead-row");
-          row.insertBefore(checkbox, row.firstChild);
-        } else {
-          checkbox.dataset.contactName = contactName;
-          checkbox.dataset.leadValue = leadValue;
-        }
-
-        const cleanContact = cleanWhatsAppStr(contactName);
-        checkbox.checked = leads.some((l) => {
-          const cleanL = cleanWhatsAppStr(l);
-          return (
-            cleanL === cleanContact ||
-            cleanL.startsWith(cleanContact + " •") ||
-            cleanL.includes(cleanContact)
-          );
         });
-      } catch (err) {
-        // Safe catch per row
+
+        if (!row.classList.contains("wa-lead-row")) {
+          row.classList.add("wa-lead-row");
+        }
+        row.insertBefore(checkbox, row.firstChild);
+      } else {
+        checkbox.dataset.contactName = contactName;
+        checkbox.dataset.leadValue = leadValue;
       }
-    });
+
+      const shouldBeChecked = isLeadSelected(contactName);
+      if (checkbox.checked !== shouldBeChecked) {
+        checkbox.checked = shouldBeChecked;
+      }
+    } catch (err) {
+      // Safe catch per row
+    }
   });
 }
 
@@ -578,25 +648,50 @@ function injectDigitalMbgCheckboxes() {
 // ==========================================
 function addLead(leadStr) {
   if (!leadStr || !leadStr.trim()) return;
-  chrome.storage.local.get(["selectedLeads"], (result) => {
-    let leads = result.selectedLeads || [];
-    const leadContact = leadStr.split("•")[0].trim();
-    // Remove old duplicate representation if exists
-    leads = leads.filter((l) => l !== leadStr && l !== leadContact && !l.startsWith(leadContact + " •"));
-    leads.push(leadStr);
-    chrome.storage.local.set({ selectedLeads: leads });
-  });
+  const cleanLead = cleanWhatsAppStr(leadStr);
+  const leadContact = cleanLead.split("•")[0].trim();
+  console.log("[Leadio WA] Adding lead:", cleanLead);
+
+  // Synchronous in-memory update prevents checkbox uncheck lag
+  inMemoryLeads = inMemoryLeads.filter(
+    (l) => l !== cleanLead && l !== leadContact && !l.startsWith(leadContact + " •")
+  );
+  inMemoryLeads.push(cleanLead);
+
+  try {
+    chrome.storage.local.set({ selectedLeads: inMemoryLeads }, () => {
+      console.log("[Leadio WA] Saved to storage. Total leads:", inMemoryLeads.length);
+    });
+  } catch (err) {
+    console.warn("[Leadio] Storage set error:", err);
+  }
+
+  try {
+    chrome.runtime.sendMessage({ action: "leadAdded", lead: cleanLead, allLeads: inMemoryLeads }).catch(() => {});
+  } catch (e) {}
 }
 
 function removeLead(contactName) {
   if (!contactName) return;
-  chrome.storage.local.get(["selectedLeads"], (result) => {
-    let leads = result.selectedLeads || [];
-    leads = leads.filter(
-      (l) => l !== contactName && !l.startsWith(contactName + " •") && !l.includes(contactName)
-    );
-    chrome.storage.local.set({ selectedLeads: leads });
-  });
+  const cleanName = cleanWhatsAppStr(contactName);
+  console.log("[Leadio WA] Removing lead:", cleanName);
+
+  // Synchronous in-memory update
+  inMemoryLeads = inMemoryLeads.filter(
+    (l) => l !== cleanName && !l.startsWith(cleanName + " •") && !l.includes(cleanName)
+  );
+
+  try {
+    chrome.storage.local.set({ selectedLeads: inMemoryLeads }, () => {
+      console.log("[Leadio WA] Removed from storage. Total leads:", inMemoryLeads.length);
+    });
+  } catch (err) {
+    console.warn("[Leadio] Storage remove error:", err);
+  }
+
+  try {
+    chrome.runtime.sendMessage({ action: "leadRemoved", contactName: cleanName, allLeads: inMemoryLeads }).catch(() => {});
+  } catch (e) {}
 }
 
 // ==========================================
@@ -604,43 +699,74 @@ function removeLead(contactName) {
 // ==========================================
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName === "local" && changes.selectedLeads) {
-    const newLeads = changes.selectedLeads.newValue || [];
-    document.querySelectorAll(".wa-lead-checkbox, .leadio-mbg-checkbox").forEach((cb) => {
-      const name = cb.dataset.contactName;
-      if (name) {
-        cb.checked = newLeads.some(
-          (l) => l === name || l.startsWith(name + " •") || l.includes(name)
-        );
-      }
-    });
+    inMemoryLeads = changes.selectedLeads.newValue || [];
+    syncCheckboxesDOM();
   }
 });
 
 // ==========================================
 // 5. OBSERVER & INITIALIZATION
 // ==========================================
+let isInjecting = false;
 let debounceTimer = null;
+
 function triggerInject() {
   if (debounceTimer) clearTimeout(debounceTimer);
   debounceTimer = setTimeout(() => {
-    if (isWhatsApp) {
-      injectWhatsAppCheckboxes();
-    } else if (isDigitalMbg) {
-      injectDigitalMbgCheckboxes();
-    } else {
-      injectWhatsAppCheckboxes();
-      injectDigitalMbgCheckboxes();
+    if (isInjecting) return;
+    isInjecting = true;
+    try {
+      if (isWhatsApp) {
+        injectWhatsAppCheckboxes();
+      } else if (isDigitalMbg) {
+        injectDigitalMbgCheckboxes();
+      } else {
+        injectWhatsAppCheckboxes();
+        injectDigitalMbgCheckboxes();
+      }
+    } finally {
+      setTimeout(() => {
+        isInjecting = false;
+      }, 250);
     }
-  }, 100);
+  }, 200);
 }
 
-const observer = new MutationObserver(() => {
-  triggerInject();
+const observer = new MutationObserver((mutations) => {
+  if (isInjecting) return;
+
+  // Ignore mutations purely caused by our own injected checkboxes/classes
+  let isOnlySelfMutation = true;
+  for (const m of mutations) {
+    const target = m.target;
+    if (target && target.classList) {
+      if (
+        target.classList.contains("wa-lead-checkbox") ||
+        target.classList.contains("wa-lead-row") ||
+        target.classList.contains("leadio-mbg-checkbox") ||
+        target.classList.contains("leadio-mbg-checkbox-wrap")
+      ) {
+        continue;
+      }
+    }
+    isOnlySelfMutation = false;
+    break;
+  }
+
+  if (!isOnlySelfMutation) {
+    triggerInject();
+  }
 });
 
 observer.observe(document.body, { childList: true, subtree: true });
 
-triggerInject();
-setTimeout(triggerInject, 800);
-setTimeout(triggerInject, 1800);
-setTimeout(triggerInject, 3500);
+// Load initial leads from storage before first inject
+chrome.storage.local.get(["selectedLeads"], (res) => {
+  if (res && Array.isArray(res.selectedLeads)) {
+    inMemoryLeads = res.selectedLeads;
+  }
+  triggerInject();
+});
+
+setTimeout(triggerInject, 600);
+setTimeout(triggerInject, 1500);

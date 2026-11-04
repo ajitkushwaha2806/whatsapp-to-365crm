@@ -19,9 +19,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 });
 
 const encodeParam = (val) => {
-  return encodeURIComponent(val || "")
-    .replace(/%20/g, "+")
-    .replace(/%2F/g, "/");
+  return encodeURIComponent(val || "").replace(/%20/g, "+");
 };
 
 async function processLeads(leads, sheetConfig, legacyConfig) {
@@ -54,23 +52,29 @@ async function processLeads(leads, sheetConfig, legacyConfig) {
     baseUrl = baseUrl.replace(/\/edit\/?$/, "/viewform");
   }
 
+  const normalizedLeadKey = leadEntryKey.startsWith("entry.") ? leadEntryKey : `entry.${leadEntryKey}`;
+
   for (let i = 0; i < leads.length; i++) {
     const lead = leads[i];
     chrome.runtime.sendMessage({ action: "leadStatus", lead: lead, status: "submitting" });
 
-    // Build URL query params dynamically
+    // Build URL query params dynamically with normalized entry. prefixes
     const queryParts = ["usp=pp_url"];
-    if (leadEntryKey) {
-      queryParts.push(`${leadEntryKey}=${encodeParam(lead)}`);
+    if (normalizedLeadKey) {
+      queryParts.push(`${normalizedLeadKey}=${encodeParam(lead)}`);
     }
-    for (const [key, val] of Object.entries(fieldValues)) {
-      if (val && key !== leadEntryKey) {
-        queryParts.push(`${key}=${encodeParam(val)}`);
+
+    for (const [rawKey, val] of Object.entries(fieldValues)) {
+      if (!val) continue;
+      const cleanKey = String(rawKey).startsWith("entry.") ? String(rawKey) : `entry.${rawKey}`;
+      if (cleanKey !== normalizedLeadKey) {
+        queryParts.push(`${cleanKey}=${encodeParam(val)}`);
       }
     }
     queryParts.push("auto_submit=true");
 
     const formUrl = `${baseUrl}?${queryParts.join("&")}`;
+    console.log("[Leadio BG] Launching form URL:", formUrl);
 
     try {
       // 1. Create a single background tab

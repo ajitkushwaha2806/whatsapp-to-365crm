@@ -119,7 +119,68 @@ function LeadsApp({ authUser: propAuthUser, userButton }) {
         }
       };
       chrome.storage.onChanged.addListener(listener);
-      return () => chrome.storage.onChanged.removeListener(listener);
+
+      const msgListener = (msg) => {
+        if (msg.allLeads && Array.isArray(msg.allLeads)) {
+          setLeads(msg.allLeads);
+          return;
+        }
+        if (msg.action === "leadAdded" && msg.lead) {
+          setLeads((prev) => {
+            const cleanLead = msg.lead;
+            const leadContact = cleanLead.split("•")[0].trim();
+            const filtered = prev.filter(
+              (l) => l !== cleanLead && l !== leadContact && !l.startsWith(leadContact + " •")
+            );
+            return [...filtered, cleanLead];
+          });
+        } else if (msg.action === "leadRemoved" && msg.contactName) {
+          setLeads((prev) =>
+            prev.filter(
+              (l) => l !== msg.contactName && !l.startsWith(msg.contactName + " •") && !l.includes(msg.contactName)
+            )
+          );
+        }
+      };
+      if (chrome.runtime && chrome.runtime.onMessage) {
+        chrome.runtime.onMessage.addListener(msgListener);
+      }
+
+      // Fast storage polling (500ms) to guarantee side panel is always 100% in-sync with WhatsApp
+      const pollStorage = () => {
+        if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+          chrome.storage.local.get(["selectedLeads"], (res) => {
+            if (res && Array.isArray(res.selectedLeads)) {
+              setLeads((prev) => {
+                if (
+                  prev.length !== res.selectedLeads.length ||
+                  prev.some((val, i) => val !== res.selectedLeads[i])
+                ) {
+                  return res.selectedLeads;
+                }
+                return prev;
+              });
+            }
+          });
+        }
+      };
+
+      const pollInterval = setInterval(pollStorage, 500);
+      window.addEventListener("focus", pollStorage);
+      const handleVis = () => {
+        if (document.visibilityState === "visible") pollStorage();
+      };
+      document.addEventListener("visibilitychange", handleVis);
+
+      return () => {
+        clearInterval(pollInterval);
+        window.removeEventListener("focus", pollStorage);
+        document.removeEventListener("visibilitychange", handleVis);
+        chrome.storage.onChanged.removeListener(listener);
+        if (chrome.runtime && chrome.runtime.onMessage) {
+          chrome.runtime.onMessage.removeListener(msgListener);
+        }
+      };
     } else if (typeof window !== "undefined") {
       const savedUser = localStorage.getItem("loggedStaffUser");
       const userLoggedOut = localStorage.getItem("userLoggedOut") === "true";
@@ -351,28 +412,53 @@ function LeadsApp({ authUser: propAuthUser, userButton }) {
     );
   }, [workspaces, activeWorkspaceId, loggedUser]);
 
-  // 3. Visible sheets: If an active workspace has googleSheets, use them, otherwise all sheets
+  // 3. Visible sheets: Scoped strictly to the active workspace
   const visibleSheets = useMemo(() => {
-    if (activeWorkspace?.integrations?.googleSheets && activeWorkspace.integrations.googleSheets.length > 0) {
-      return activeWorkspace.integrations.googleSheets;
+    if (!activeWorkspace) return [];
+
+    const wsSheets = activeWorkspace.integrations?.googleSheets || [];
+    const standalone = sheets.filter((s) => {
+      const matchId =
+        s.workspaceId &&
+        (s.workspaceId === activeWorkspace.id || s.workspaceId === activeWorkspace._id);
+      const matchCode =
+        s.workspaceCode &&
+        activeWorkspace.workspaceCode &&
+        s.workspaceCode.toLowerCase() === activeWorkspace.workspaceCode.toLowerCase();
+      return matchId || matchCode;
+    });
+
+    const combined = [...wsSheets];
+    const seenIds = new Set(wsSheets.map((s) => s.id));
+    for (const s of standalone) {
+      if (!seenIds.has(s.id)) {
+        combined.push(s);
+        seenIds.add(s.id);
+      }
     }
 
-    if (!loggedUser || loggedUser.role === "admin") {
-      return sheets;
-    }
+    if (combined.length > 0) return combined;
 
-    // If staff logged into a specific workspace, show sheets belonging to that workspace
-    if (loggedUser.workspaceCode || loggedUser.workspaceId || loggedUser.sheetId) {
+    // If staff logged into a specific workspace or sheet
+    if (
+      loggedUser &&
+      loggedUser.role === "staff" &&
+      (loggedUser.workspaceCode || loggedUser.workspaceId || loggedUser.sheetId)
+    ) {
       const targetCode = (loggedUser.workspaceCode || "").toLowerCase();
       const targetId = loggedUser.workspaceId || loggedUser.sheetId;
       const match = sheets.filter((s) => {
         const sCode = (s.workspaceCode || "").toLowerCase();
-        return (targetCode && sCode === targetCode) || (targetId && s.workspaceId === targetId) || s.id === targetId;
+        return (
+          (targetCode && sCode === targetCode) ||
+          (targetId && s.workspaceId === targetId) ||
+          s.id === targetId
+        );
       });
       if (match.length > 0) return match;
     }
 
-    return sheets;
+    return [];
   }, [activeWorkspace, sheets, loggedUser]);
 
   // Keep activeSheetId valid for current visible sheets
@@ -716,6 +802,8 @@ function LeadsApp({ authUser: propAuthUser, userButton }) {
         assignedUsers: sheetData.assignedUsers,
         fields: sheetData.fields,
         selectedValues: sheetData.defaultValues,
+        workspaceId: activeWorkspace?.id || "default",
+        workspaceCode: activeWorkspace?.workspaceCode || "WS-1001",
       };
 
       try {

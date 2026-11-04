@@ -18,7 +18,6 @@
 
 .wa-lead-row > div:first-of-type {
   padding-left: 40px !important;
-  transition: padding-left 0.2s;
 }
 
 /* DigitalMBG Chatbot Lead Selection Styles */

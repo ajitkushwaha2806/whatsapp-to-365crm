@@ -155,9 +155,48 @@ export default function SettingsPage() {
     return workspaces.find((w) => w.id === activeWorkspaceId) || workspaces[0];
   }, [workspaces, activeWorkspaceId]);
 
+  // Scoped strictly to the active workspace so other workspaces' sheets never bleed in
+  const visibleSheets = useMemo(() => {
+    if (!activeWorkspace) return [];
+
+    const wsSheets = activeWorkspace.integrations?.googleSheets || [];
+    const standalone = sheets.filter((s) => {
+      const matchId =
+        s.workspaceId &&
+        (s.workspaceId === activeWorkspace.id || s.workspaceId === activeWorkspace._id);
+      const matchCode =
+        s.workspaceCode &&
+        activeWorkspace.workspaceCode &&
+        s.workspaceCode.toLowerCase() === activeWorkspace.workspaceCode.toLowerCase();
+      return matchId || matchCode;
+    });
+
+    const combined = [...wsSheets];
+    const seenIds = new Set(wsSheets.map((s) => s.id));
+    for (const s of standalone) {
+      if (!seenIds.has(s.id)) {
+        combined.push(s);
+        seenIds.add(s.id);
+      }
+    }
+    return combined;
+  }, [activeWorkspace, sheets]);
+
+  // Keep activeSheetId valid for current workspace sheets
+  useEffect(() => {
+    if (visibleSheets.length > 0) {
+      if (!activeSheetId || !visibleSheets.some((s) => s.id === activeSheetId)) {
+        setActiveSheetId(visibleSheets[0].id);
+      }
+    } else {
+      setActiveSheetId("");
+    }
+  }, [visibleSheets, activeSheetId]);
+
   const activeSheet = useMemo(() => {
-    return sheets.find((s) => s.id === activeSheetId) || sheets[0] || null;
-  }, [sheets, activeSheetId]);
+    if (visibleSheets.length === 0) return null;
+    return visibleSheets.find((s) => s.id === activeSheetId) || visibleSheets[0] || null;
+  }, [visibleSheets, activeSheetId]);
 
   const teamMembers = useMemo(() => {
     return Array.isArray(activeSheet?.assignedUsers) ? activeSheet.assignedUsers : [];
@@ -195,17 +234,17 @@ export default function SettingsPage() {
   };
 
   const handleDeleteSheet = async (idToDelete) => {
-    if (sheets.length <= 1) {
+    if (visibleSheets.length <= 1) {
       showToast("At least one sheet must remain configured.", "error");
       return;
     }
     if (confirm("Delete this Google Form configuration?")) {
       try {
         await deleteSheet(idToDelete);
-        const updated = sheets.filter((s) => s.id !== idToDelete);
-        setSheets(updated);
-        if (activeSheetId === idToDelete) {
-          setActiveSheetId(updated[0]?.id || "");
+        setSheets((prev) => prev.filter((s) => s.id !== idToDelete));
+        const remaining = visibleSheets.filter((s) => s.id !== idToDelete);
+        if (remaining.length > 0) {
+          setActiveSheetId(remaining[0]?.id || "");
         }
         showToast("Sheet deleted successfully", "success");
       } catch (err) {
@@ -232,6 +271,8 @@ export default function SettingsPage() {
           assignedUsers: sheetData.assignedUsers,
           fields: sheetData.fields,
           selectedValues: sheetData.defaultValues,
+          workspaceId: activeWorkspace?.id || "default",
+          workspaceCode: activeWorkspace?.workspaceCode || "WS-1001",
         });
         setSheets((prev) => [...prev, createdSheet]);
         setActiveSheetId(createdSheet.id);
@@ -285,7 +326,7 @@ export default function SettingsPage() {
           activeWorkspace={activeWorkspace}
           activeWorkspaceId={activeWorkspaceId}
           onWorkspaceChange={handleWorkspaceChange}
-          sheets={sheets}
+          sheets={visibleSheets}
           activeSheet={activeSheet}
           activeSheetId={activeSheetId}
           onSheetChange={handleSheetChange}
@@ -317,7 +358,7 @@ export default function SettingsPage() {
 
           <main className="flex-1 p-2.5 sm:p-4 lg:p-6 overflow-y-auto w-full min-w-0">
             <SettingsTab
-              sheets={sheets}
+              sheets={visibleSheets}
               activeSheet={activeSheet}
               activeSheetId={activeSheetId}
               onSheetChange={handleSheetChange}

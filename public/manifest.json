@@ -74,6 +74,8 @@
     "https://fonts.gstatic.com/*",
     "https://*.365crm.io/*",
     "https://www.api.365crm.io/*",
+    "https://whatsapp-to-365crm-ar8o.vercel.app/*",
+    "https://*.vercel.app/*",
     "http://localhost:3000/*"
   ]
 }

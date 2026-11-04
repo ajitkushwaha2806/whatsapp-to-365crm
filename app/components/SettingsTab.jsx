@@ -298,6 +298,22 @@ export default function SettingsTab({
             <p className="text-xs text-slate-500 mt-0.5">
               Edit any configuration: Sheet name, form link, prefilled answers, lead phone field, and team permissions.
             </p>
+            {sheets.length > 1 && (
+              <div className="flex items-center gap-2 mt-2.5">
+                <span className="text-xs font-semibold text-slate-600">Select Form:</span>
+                <select
+                  value={currentSheet?.id || ""}
+                  onChange={(e) => onSheetChange && onSheetChange(e.target.value)}
+                  className="bg-slate-50 border border-slate-200 rounded-md px-2.5 py-1 text-xs font-bold text-slate-800 outline-none focus:border-[#DE5437] cursor-pointer"
+                >
+                  {sheets.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name || s.sheetName || "Sheet"}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
 
           <div className="flex items-center gap-2 w-full sm:w-auto">

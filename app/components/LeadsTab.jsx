@@ -340,7 +340,7 @@ export default function LeadsTab({
                                 <span>Failed</span>
                               </span>
                               <p className="text-[10px] text-red-600 bg-red-50/90 border border-red-200/60 rounded px-1.5 py-0.5 font-medium leading-tight break-words">
-                                {status?.error || status?.message || (typeof status === "string" && status !== "error" ? status : "Please enter a valid mobile number")}
+                                {status?.error || status?.message || (typeof status === "string" && status !== "error" ? status : "Form submission timed out or required field missing")}
                               </p>
                             </div>
                           )}

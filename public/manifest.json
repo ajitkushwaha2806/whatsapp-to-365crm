@@ -1,0 +1,79 @@
+{
+  "manifest_version": 3,
+  "name": "Leadio",
+  "version": "1.0",
+  "description": "WhatsApp Leads, Straight to Sheets.",
+  "action": {
+    "default_title": "Leadio",
+    "default_icon": {
+      "16": "icon16.png",
+      "48": "icon48.png",
+      "128": "icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  },
+  "side_panel": {
+    "default_path": "index.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://web.whatsapp.com/*",
+        "https://*.whatsapp.com/*",
+        "https://chatbot.digitalmbg.com/*",
+        "https://*.digitalmbg.com/*"
+      ],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "all_frames": true,
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://chatbot.digitalmbg.com/*",
+        "https://*.digitalmbg.com/*"
+      ],
+      "js": ["mbg-bridge.js"],
+      "world": "MAIN",
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["https://docs.google.com/forms/*"],
+      "js": ["google-form-content.js"],
+      "all_frames": true
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["mbg-bridge.js"],
+      "matches": [
+        "https://chatbot.digitalmbg.com/*",
+        "https://*.digitalmbg.com/*"
+      ]
+    }
+  ],
+  "permissions": [
+    "storage",
+    "sidePanel",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://web.whatsapp.com/*",
+    "https://*.whatsapp.com/*",
+    "https://chatbot.digitalmbg.com/*",
+    "https://*.digitalmbg.com/*",
+    "https://docs.google.com/forms/*",
+    "https://fonts.googleapis.com/*",
+    "https://fonts.gstatic.com/*",
+    "https://*.365crm.io/*",
+    "https://www.api.365crm.io/*",
+    "http://localhost:3000/*"
+  ]
+}

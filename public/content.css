@@ -1,0 +1,51 @@
+.wa-lead-checkbox {
+  position: absolute;
+  top: 50%;
+  left: 10px;
+  transform: translateY(-50%);
+  z-index: 999999 !important;
+  width: 20px !important;
+  height: 20px !important;
+  cursor: pointer;
+  accent-color: #25D366;
+  pointer-events: auto !important;
+  display: block !important;
+  opacity: 1 !important;
+  visibility: visible !important;
+}
+
+/* Removed .wa-lead-row position override to not break WhatsApp's virtual list absolute positioning */
+
+.wa-lead-row > div:first-of-type {
+  padding-left: 40px !important;
+  transition: padding-left 0.2s;
+}
+
+/* DigitalMBG Chatbot Lead Selection Styles */
+.leadio-mbg-checkbox-wrap {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  flex-shrink: 0 !important;
+  z-index: 50 !important;
+  margin-right: 8px !important;
+  margin-left: 4px !important;
+}
+
+.leadio-mbg-checkbox {
+  width: 18px !important;
+  height: 18px !important;
+  cursor: pointer !important;
+  accent-color: #DE5437 !important;
+  border-radius: 4px !important;
+  outline: none !important;
+  display: block !important;
+  opacity: 1 !important;
+  visibility: visible !important;
+  pointer-events: auto !important;
+  transition: transform 0.15s ease !important;
+}
+
+.leadio-mbg-checkbox:hover {
+  transform: scale(1.1) !important;
+}

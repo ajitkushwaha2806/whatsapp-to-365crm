@@ -1,5 +1,6 @@
 import connectToDatabase from "@/lib/db";
 import Sheet from "@/lib/models/Sheet";
+import Workspace from "@/lib/models/Workspace";
 import { jsonWithCors, handleCorsOptions } from "@/lib/cors";
 
 export const dynamic = "force-dynamic";
@@ -40,28 +41,45 @@ function formatSheet(sheetDoc) {
   return obj;
 }
 
-async function findSheetById(id) {
+async function findSheetTarget(id) {
   if (!id) return null;
-  // 1. Direct match on id field
-  let sheet = await Sheet.findOne({ id });
-  if (sheet) return sheet;
 
-  // 2. Direct match on _id if id is valid ObjectId
+  // 1. Standalone Sheet collection match
+  let sheet = await Sheet.findOne({ id });
+  if (sheet) return { type: "standalone", sheet };
+
   if (id.match(/^[0-9a-fA-F]{24}$/)) {
     sheet = await Sheet.findById(id);
-    if (sheet) return sheet;
+    if (sheet) return { type: "standalone", sheet };
   }
 
-  // 3. Match on stripped "sheet_" prefix if it wraps an ObjectId
   const stripped = id.replace(/^sheet_/, "");
   if (stripped.match(/^[0-9a-fA-F]{24}$/)) {
     sheet = await Sheet.findById(stripped);
-    if (sheet) return sheet;
+    if (sheet) return { type: "standalone", sheet };
   }
 
-  // 4. Try matching with sheet_ prefix
   sheet = await Sheet.findOne({ id: `sheet_${id}` });
-  return sheet;
+  if (sheet) return { type: "standalone", sheet };
+
+  // 2. Search inside Workspace.integrations.googleSheets
+  const workspaces = await Workspace.find({ "integrations.googleSheets": { $exists: true, $ne: [] } });
+  for (const ws of workspaces) {
+    const sheets = ws.integrations?.googleSheets || [];
+    const idx = sheets.findIndex(
+      (s) =>
+        s.id === id ||
+        s.id === stripped ||
+        s.id === `sheet_${id}` ||
+        (s._id && s._id.toString() === id) ||
+        (s._id && s._id.toString() === stripped)
+    );
+    if (idx >= 0) {
+      return { type: "workspace", ws, sheet: sheets[idx], index: idx };
+    }
+  }
+
+  return null;
 }
 
 // GET /api/sheets/[id] - Fetch single sheet
@@ -70,15 +88,25 @@ export async function GET(request, { params }) {
     await connectToDatabase();
     const { id } = await params;
 
-    const sheet = await findSheetById(id);
-    if (!sheet) {
+    const target = await findSheetTarget(id);
+    if (!target) {
       return jsonWithCors(
         { success: false, error: "Sheet not found" },
         { status: 404 }
       );
     }
 
-    return jsonWithCors({ success: true, data: formatSheet(sheet) });
+    if (target.type === "workspace") {
+      const formatted = {
+        ...formatSheet(target.sheet),
+        workspaceCode: target.ws.workspaceCode,
+        workspaceId: target.ws.id,
+        workspaceName: target.ws.name,
+      };
+      return jsonWithCors({ success: true, data: formatted });
+    }
+
+    return jsonWithCors({ success: true, data: formatSheet(target.sheet) });
   } catch (error) {
     console.error("GET /api/sheets/[id] error:", error);
     return jsonWithCors(
@@ -95,8 +123,8 @@ export async function PUT(request, { params }) {
     const { id } = await params;
     const body = await request.json();
 
-    const sheet = await findSheetById(id);
-    if (!sheet) {
+    const target = await findSheetTarget(id);
+    if (!target) {
       return jsonWithCors(
         { success: false, error: "Sheet not found" },
         { status: 404 }
@@ -117,6 +145,37 @@ export async function PUT(request, { params }) {
       "workspaceId",
     ];
 
+    if (target.type === "workspace") {
+      const sheet = target.sheet;
+      allowedFields.forEach((key) => {
+        if (body[key] !== undefined) {
+          sheet[key] = body[key];
+        }
+      });
+
+      if (body.selectedValues !== undefined) {
+        sheet.selectedValues = sanitizeSelectedValues(body.selectedValues);
+      }
+
+      target.ws.markModified("integrations");
+      await target.ws.save();
+
+      const formatted = {
+        ...formatSheet(sheet),
+        workspaceCode: target.ws.workspaceCode,
+        workspaceId: target.ws.id,
+        workspaceName: target.ws.name,
+      };
+
+      return jsonWithCors({
+        success: true,
+        data: formatted,
+        message: "Sheet updated successfully",
+      });
+    }
+
+    // Standalone sheet
+    const sheet = target.sheet;
     allowedFields.forEach((key) => {
       if (body[key] !== undefined) {
         sheet[key] = body[key];
@@ -149,15 +208,27 @@ export async function DELETE(request, { params }) {
     await connectToDatabase();
     const { id } = await params;
 
-    const sheet = await findSheetById(id);
-    if (!sheet) {
+    const target = await findSheetTarget(id);
+    if (!target) {
       return jsonWithCors(
         { success: false, error: "Sheet not found" },
         { status: 404 }
       );
     }
 
-    await Sheet.deleteOne({ _id: sheet._id });
+    if (target.type === "workspace") {
+      target.ws.integrations.googleSheets.splice(target.index, 1);
+      target.ws.markModified("integrations");
+      await target.ws.save();
+
+      return jsonWithCors({
+        success: true,
+        message: "Sheet deleted successfully",
+        id,
+      });
+    }
+
+    await Sheet.deleteOne({ _id: target.sheet._id });
 
     return jsonWithCors({
       success: true,

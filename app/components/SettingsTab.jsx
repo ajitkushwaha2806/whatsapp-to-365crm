@@ -252,7 +252,11 @@ export default function SettingsTab({
     try {
       setSaveStatus("saving");
       if (onUpdateSheet) {
-        await onUpdateSheet(currentSheet.id, payload);
+        const res = await onUpdateSheet(currentSheet.id, payload);
+        if (!res) {
+          setSaveStatus("error");
+          return;
+        }
       }
       setSaveStatus("saved");
       setTimeout(() => setSaveStatus(""), 4000);

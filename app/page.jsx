@@ -731,10 +731,22 @@ function LeadsApp({ authUser: propAuthUser, userButton }) {
 
     // 2. Submit to Google Sheet if configured
     if (isSheetReady) {
+      const effectiveFieldValues = {};
+      if (activeSheet.fields && Array.isArray(activeSheet.fields)) {
+        activeSheet.fields.forEach((f) => {
+          if (f.id) {
+            effectiveFieldValues[f.id] = f.defaultValue || f.options?.[0] || "";
+          }
+        });
+      }
+      if (activeSheet.selectedValues && typeof activeSheet.selectedValues === "object") {
+        Object.assign(effectiveFieldValues, activeSheet.selectedValues);
+      }
+
       const sheetConfigPayload = {
         baseUrl: activeSheet.baseUrl,
         leadEntryKey: activeSheet.leadEntryKey,
-        fieldValues: activeSheet.selectedValues || {},
+        fieldValues: effectiveFieldValues,
       };
 
       if (typeof chrome !== "undefined" && chrome.runtime) {
@@ -847,8 +859,23 @@ function LeadsApp({ authUser: propAuthUser, userButton }) {
   const handleUpdateSheet = async (sheetId, payload) => {
     try {
       const updatedSheet = await updateSheet(sheetId, payload);
-      const updated = sheets.map((s) => (s.id === sheetId ? updatedSheet : s));
-      setSheets(updated);
+      setSheets((prev) => prev.map((s) => (s.id === sheetId ? updatedSheet : s)));
+      setWorkspaces((prevWs) =>
+        prevWs.map((ws) => {
+          if (!ws.integrations?.googleSheets) return ws;
+          const exists = ws.integrations.googleSheets.some((s) => s.id === sheetId);
+          if (!exists) return ws;
+          return {
+            ...ws,
+            integrations: {
+              ...ws.integrations,
+              googleSheets: ws.integrations.googleSheets.map((s) =>
+                s.id === sheetId ? { ...s, ...updatedSheet } : s
+              ),
+            },
+          };
+        })
+      );
       showToast("Sheet updated successfully", "success");
       return updatedSheet;
     } catch (err) {

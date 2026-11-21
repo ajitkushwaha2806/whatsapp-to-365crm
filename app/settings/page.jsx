@@ -224,6 +224,22 @@ export default function SettingsPage() {
     try {
       const updatedSheet = await updateSheet(sheetId, payload);
       setSheets((prev) => prev.map((s) => (s.id === sheetId ? updatedSheet : s)));
+      setWorkspaces((prevWs) =>
+        prevWs.map((ws) => {
+          if (!ws.integrations?.googleSheets) return ws;
+          const exists = ws.integrations.googleSheets.some((s) => s.id === sheetId);
+          if (!exists) return ws;
+          return {
+            ...ws,
+            integrations: {
+              ...ws.integrations,
+              googleSheets: ws.integrations.googleSheets.map((s) =>
+                s.id === sheetId ? { ...s, ...updatedSheet } : s
+              ),
+            },
+          };
+        })
+      );
       showToast("Sheet updated successfully", "success");
       return updatedSheet;
     } catch (err) {
